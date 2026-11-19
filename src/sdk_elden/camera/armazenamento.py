@@ -82,6 +82,35 @@ class MetadadosCaptura:
     controles: tuple[InfoControle, ...]
 
 
+def nome_base(agora: datetime, camera_nome: str, largura: int, altura: int) -> str:
+    """'20261119_143012_123_2k_usb_Camera_Redeagle_2560x1440' (mesmo padrão para foto e vídeo)."""
+    return f"{agora:%Y%m%d_%H%M%S}_{agora.microsecond // 1000:03d}_{slug(camera_nome)}_{largura}x{altura}"
+
+
+def dados_camera(meta: MetadadosCaptura) -> dict:
+    """Parte do sidecar comum a foto e vídeo: câmera, modo pedido/negociado e controles."""
+    return {
+        "camera": {
+            "nome": meta.camera_nome.strip(),
+            "caminho": meta.camera_caminho,
+            "caminho_estavel": meta.camera_caminho_estavel,
+            "driver": meta.camera_driver,
+            "barramento": meta.camera_barramento,
+        },
+        "modo_pedido": asdict(meta.modo_pedido),
+        "modo_negociado": asdict(meta.modo_negociado),
+        # controles lidos no driver no momento do salvamento (podem diferir em ~1 frame do instante da imagem)
+        "controles": {
+            c.nome: {"valor": c.valor, "inativo": c.inativo, **({"menu": c.menu.get(c.valor)} if c.menu else {})}
+            for c in meta.controles if c.suportado
+        },
+    }
+
+
+def escrever_sidecar(destino: Path, dados: dict) -> None:
+    _escrever_atomico_texto(destino, json.dumps(dados, ensure_ascii=False, indent=2))
+
+
 def _escrever_atomico_imagem(destino: Path, frame: np.ndarray, params: list[int]) -> None:
     tmp = destino.with_name(f".{destino.stem}.tmp{destino.suffix}")  # extensão define o codec no imwrite
     # imwrite tem DOIS modos de falha (verificados): retorna False (ex.: diretório
@@ -113,7 +142,7 @@ def salvar_captura(
     pasta.mkdir(parents=True, exist_ok=True)
 
     altura, largura = frame.shape[:2]
-    base = f"{agora:%Y%m%d_%H%M%S}_{agora.microsecond // 1000:03d}_{slug(meta.camera_nome)}_{largura}x{altura}"
+    base = nome_base(agora, meta.camera_nome, largura, altura)
     imagem = pasta / f"{base}.{cfg.formato}"
     sidecar = pasta / f"{base}.json"
     if imagem.exists() or sidecar.exists():
@@ -127,22 +156,9 @@ def salvar_captura(
         "subrepo": cfg.subrepo,
         "formato": cfg.formato,
         "qualidade_jpg": cfg.qualidade_jpg if cfg.formato == "jpg" else None,
-        "camera": {
-            "nome": meta.camera_nome.strip(),
-            "caminho": meta.camera_caminho,
-            "caminho_estavel": meta.camera_caminho_estavel,
-            "driver": meta.camera_driver,
-            "barramento": meta.camera_barramento,
-        },
-        "modo_pedido": asdict(meta.modo_pedido),
-        "modo_negociado": asdict(meta.modo_negociado),
+        **dados_camera(meta),
         "resolucao_frame": [largura, altura],
-        # controles lidos no driver no momento do salvamento (podem diferir em ~1 frame do instante da imagem)
-        "controles": {
-            c.nome: {"valor": c.valor, "inativo": c.inativo, **({"menu": c.menu.get(c.valor)} if c.menu else {})}
-            for c in meta.controles if c.suportado
-        },
     }
     _escrever_atomico_imagem(imagem, frame, params)
-    _escrever_atomico_texto(sidecar, json.dumps(dados, ensure_ascii=False, indent=2))
+    escrever_sidecar(sidecar, dados)
     return imagem

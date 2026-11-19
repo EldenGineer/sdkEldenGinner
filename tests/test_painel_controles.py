@@ -71,11 +71,12 @@ def test_nao_suportado_e_int64_gigante(app):
 
 def test_remontar_nao_deixa_widgets_fantasmas(app):
     p = PainelControles()
-    conteudo = p._grade.parentWidget()
+    conteudo = p._conteudo
     p._montar()
     p._montar()
-    # sem câmera: só o rótulo "nenhuma câmera selecionada", mesmo sem rodar o loop de eventos
-    rotulos = [w for w in conteudo.findChildren(QLabel) if w.parent() is conteudo]
+    # sem câmera: só o rótulo "nenhuma câmera selecionada" na tela, mesmo sem rodar o loop de
+    # eventos (os removidos ficam ocultos até o deleteLater; ver _montar)
+    rotulos = [w for w in conteudo.findChildren(QLabel) if w.parent() is conteudo and not w.isHidden()]
     assert [r.text() for r in rotulos] == ["nenhuma câmera selecionada"]
 
 
@@ -107,3 +108,75 @@ def test_painel_real_dependencia_exposicao(app):
         p.fechar()
     with ControlesCamera(REDEAGLE) as c:
         assert {n: c.ler(n) for n in orig} == orig
+
+
+def test_botao_padrao_cabe_o_simbolo_com_tema(app):
+    """Regressão: o padding geral de QPushButton do tema deixava 2 px no botão ↺ (virava '.')."""
+    from PySide6.QtGui import QFontMetrics
+    from PySide6.QtWidgets import QPushButton, QStyle, QStyleOptionButton
+
+    from sdk_elden.camera.gui.tema import aplicar_tema
+
+    qss, paleta, estilo = app.styleSheet(), app.palette(), app.style().name()
+    try:
+        aplicar_tema(app)
+        e, _ = editor(INT)
+        btn = e.findChild(QPushButton, "btnPadrao")
+        e.show()
+        app.processEvents()
+        opcao = QStyleOptionButton()
+        btn.initStyleOption(opcao)
+        util = btn.style().subElementRect(QStyle.SubElement.SE_PushButtonContents, opcao, btn).width()
+        assert util >= QFontMetrics(btn.font()).horizontalAdvance(btn.text())
+    finally:  # o tema é global na QApplication: não vazar para os outros testes
+        app.setStyleSheet(qss)
+        app.setPalette(paleta)
+        app.setStyle(estilo)
+
+
+def test_agrupar_segue_ordem_e_manda_desconhecido_para_outros():
+    from sdk_elden.camera.gui.painel_controles import OUTROS, agrupar
+
+    nomes = ["gain", "privacy", "brightness", "contrast", "white_balance_automatic"]
+    grupos = agrupar([replace(INT, nome=n) for n in nomes])
+    assert [(g, [i.nome for i in lista]) for g, lista in grupos] == [
+        ("Imagem", ["brightness", "contrast"]),  # ordem do driver dentro do grupo
+        ("Exposição e ganho", ["gain"]),
+        ("Cor", ["white_balance_automatic"]),
+        (OUTROS, ["privacy"]),  # fora da tabela: nunca some
+    ]  # grupo vazio ("Foco e enquadramento") não aparece
+
+
+@pytest.mark.parametrize("info,trecho", [
+    (INT, "W/S ou ↑/↓: ±1"),
+    (replace(INT, tipo="bool", maximo=1), "X: marcar/desmarcar"),
+    (replace(INT, tipo="menu", menu={0: "a", 1: "b"}, valor=0), "opção anterior/próxima"),
+])
+def test_tooltip_tem_info_e_atalhos(app, info, trecho):
+    e, _ = editor(info)
+    rotulo = QLabel(info.nome)
+    e.rotulo = rotulo
+    e.atualizar(info)
+    for dica in (e.entrada.toolTip(), rotulo.toolTip()):
+        assert f"padrão={info.padrao}" in dica  # informação que já existia
+        assert trecho in dica and "R: restaurar padrão" in dica and "Esc: sair do grupo" in dica
+
+
+def test_marca_de_diferente_do_padrao(app):
+    from PySide6.QtWidgets import QLabel as L
+
+    e, _ = editor(INT)  # valor 10, padrão 0
+    marca = e.findChild(L, "lblAlterado")
+    assert e.alterado() and not marca.isHidden()
+    e.atualizar(replace(INT, valor=0))
+    assert not e.alterado() and marca.isHidden()
+
+
+def test_slider_e_botao_padrao_fora_do_tab(app):
+    from PySide6.QtCore import Qt as Q
+    from PySide6.QtWidgets import QPushButton
+
+    e, _ = editor(INT)
+    assert e.findChild(QSlider).focusPolicy() == Q.FocusPolicy.NoFocus
+    assert e.findChild(QPushButton, "btnPadrao").focusPolicy() == Q.FocusPolicy.NoFocus
+    assert e.entrada is e.findChild(QSpinBox)

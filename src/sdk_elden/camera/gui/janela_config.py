@@ -1,4 +1,4 @@
-"""Diálogo de configuração de armazenamento (raiz, repo, subrepo, formato)."""
+"""Diálogo de configuração: armazenamento (raiz, repo, subrepo, formato da foto) e gravação de vídeo."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -18,6 +18,13 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from sdk_elden.camera.gravacao import (
+    CODIFICADORES_H264,
+    FORMATOS_VIDEO,
+    ConfigGravacao,
+    ErroGravacao,
+    validar_config_gravacao,
+)
 from sdk_elden.camera.armazenamento import (
     FORMATOS,
     ConfigArmazenamento,
@@ -35,11 +42,13 @@ def subpastas(pasta: Path) -> list[str]:
 
 
 class JanelaConfig(QDialog):
-    def __init__(self, cfg: ConfigArmazenamento, caminho_arquivo: Path, parent=None):
+    def __init__(self, cfg: ConfigArmazenamento, caminho_arquivo: Path, parent=None,
+                 cfg_grav: ConfigGravacao | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Configurações de armazenamento")
+        self.setWindowTitle("Configurações")
         self.setMinimumWidth(560)
         self._cfg = cfg
+        self._cfg_grav = cfg_grav or ConfigGravacao()
 
         self.ed_raiz = QLineEdit(cfg.raiz)
         btn_raiz = QPushButton("…")
@@ -60,7 +69,7 @@ class JanelaConfig(QDialog):
         self.lbl_destino = QLabel()
         self.lbl_destino.setWordWrap(True)
         self.lbl_erro = QLabel()
-        self.lbl_erro.setStyleSheet("color: #c0392b;")
+        self.lbl_erro.setObjectName("lblErro")  # cor do tema (o #c0392b fixo ficava ~3:1 no fundo escuro)
         self.lbl_erro.setWordWrap(True)
 
         form = QFormLayout()
@@ -69,6 +78,28 @@ class JanelaConfig(QDialog):
         form.addRow("Subrepo", self.cb_subrepo)
         form.addRow("Formato", self.cb_formato)
         form.addRow("Qualidade JPG", self.sp_qualidade)
+
+        # --- vídeo ---------------------------------------------------------------
+        g = self._cfg_grav
+        self.cb_video_formato = QComboBox()
+        self.cb_video_formato.addItem("MP4 (H.264)", "mp4")
+        self.cb_video_formato.addItem("MKV (MJPG, cada frame um JPEG)", "mkv")
+        self.cb_codificador = QComboBox()
+        self.cb_codificador.addItem("libx264 (CPU)", "libx264")
+        self.cb_codificador.addItem("h264_nvenc (GPU NVIDIA)", "h264_nvenc")
+        assert [self.cb_video_formato.itemData(i) for i in range(2)] == list(FORMATOS_VIDEO)
+        assert [self.cb_codificador.itemData(i) for i in range(2)] == list(CODIFICADORES_H264)
+        self.sp_qualidade_h264 = QSpinBox()
+        self.sp_qualidade_h264.setRange(0, 51)
+        self.sp_qualidade_h264.setToolTip("CRF (libx264) / CQ (nvenc): menor = melhor e arquivo maior. 23 é o padrão.")
+        self.sp_qualidade_mjpeg = QSpinBox()
+        self.sp_qualidade_mjpeg.setRange(2, 31)
+        self.sp_qualidade_mjpeg.setToolTip("-q:v do mjpeg: 2 = melhor e arquivo maior, 31 = pior.")
+        form_video = QFormLayout()
+        form_video.addRow("Formato", self.cb_video_formato)
+        form_video.addRow("Codificador", self.cb_codificador)
+        form_video.addRow("Qualidade H.264", self.sp_qualidade_h264)
+        form_video.addRow("Qualidade MJPG", self.sp_qualidade_mjpeg)
 
         self.botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.botoes.accepted.connect(self.accept)
@@ -79,7 +110,10 @@ class JanelaConfig(QDialog):
         lbl_arquivo = QLabel(f"<small>Arquivo de config: {caminho_arquivo}</small>")
         lbl_arquivo.setWordWrap(True)
         layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Fotos</b>"))
         layout.addLayout(form)
+        layout.addWidget(QLabel("<b>Vídeo</b> (ffmpeg do sistema; mesma pasta das fotos)"))
+        layout.addLayout(form_video)
         layout.addWidget(QLabel("<b>Destino das capturas</b>"))
         layout.addWidget(self.lbl_destino)
         layout.addWidget(lbl_arquivo)
@@ -92,12 +126,17 @@ class JanelaConfig(QDialog):
         self.cb_subrepo.setCurrentText(cfg.subrepo)
         self.cb_formato.setCurrentText(cfg.formato)
         self.sp_qualidade.setValue(cfg.qualidade_jpg)
+        self.cb_video_formato.setCurrentIndex(self.cb_video_formato.findData(g.formato))
+        self.cb_codificador.setCurrentIndex(self.cb_codificador.findData(g.codificador))
+        self.sp_qualidade_h264.setValue(g.qualidade_h264)
+        self.sp_qualidade_mjpeg.setValue(g.qualidade_mjpeg)
 
         self.ed_raiz.textChanged.connect(self._preencher_repos)
         self.cb_repo.currentTextChanged.connect(self._preencher_subrepos)
         for sinal in (self.ed_raiz.textChanged, self.cb_repo.currentTextChanged,
                       self.cb_subrepo.currentTextChanged, self.cb_formato.currentTextChanged,
-                      self.sp_qualidade.valueChanged):
+                      self.sp_qualidade.valueChanged, self.cb_video_formato.currentIndexChanged,
+                      self.cb_codificador.currentIndexChanged):
             sinal.connect(self._validar)
         self._validar()
 
@@ -133,12 +172,26 @@ class JanelaConfig(QDialog):
             qualidade_jpg=self.sp_qualidade.value(),
         )
 
+    def config_gravacao(self) -> ConfigGravacao:
+        return replace(
+            self._cfg_grav,
+            formato=self.cb_video_formato.currentData(),
+            codificador=self.cb_codificador.currentData(),
+            qualidade_h264=self.sp_qualidade_h264.value(),
+            qualidade_mjpeg=self.sp_qualidade_mjpeg.value(),
+        )
+
     def _validar(self) -> None:
         self.sp_qualidade.setEnabled(self.cb_formato.currentText() == "jpg")
+        mp4 = self.cb_video_formato.currentData() == "mp4"
+        for w in (self.cb_codificador, self.sp_qualidade_h264):
+            w.setEnabled(mp4)  # MKV é sempre MJPG
+        self.sp_qualidade_mjpeg.setEnabled(not mp4)
         cfg = self.config()
         try:
             validar_config(cfg)
-        except ErroArmazenamento as e:
+            validar_config_gravacao(self.config_gravacao())
+        except (ErroArmazenamento, ErroGravacao) as e:
             self.lbl_erro.setText(str(e))
             self.lbl_destino.setText("—")
             self.botoes.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)

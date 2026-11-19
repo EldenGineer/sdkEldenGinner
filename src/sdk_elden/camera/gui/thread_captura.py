@@ -26,7 +26,10 @@ def frame_para_qimage(frame: np.ndarray) -> QImage:
 
 class ThreadCaptura(QThread):
     aberta = Signal(object)        # ModoCaptura negociado
-    novo_frame = Signal(QImage, object)  # imagem p/ exibir + frame BGR (np.ndarray) original, p/ salvar depois
+    # imagem p/ exibir + frame BGR (np.ndarray) original p/ salvar + instante da leitura (time.monotonic()).
+    # O instante é tomado AQUI, logo após ler: na GUI ele incluiria a fila de eventos, e o atraso da
+    # GUI viraria buraco/repetição no vídeo gravado (RelogioCFR).
+    novo_frame = Signal(QImage, object, float)
     fps_medido = Signal(float)
     erro = Signal(str)
 
@@ -48,8 +51,8 @@ class ThreadCaptura(QThread):
                 ultimo_aviso = time.monotonic()
                 while not self._parar:
                     frame = cap.ler()
-                    self.novo_frame.emit(frame_para_qimage(frame), frame)
                     agora = time.monotonic()
+                    self.novo_frame.emit(frame_para_qimage(frame), frame, agora)
                     instantes.append(agora)
                     while instantes and agora - instantes[0] > JANELA_FPS_S:
                         instantes.popleft()

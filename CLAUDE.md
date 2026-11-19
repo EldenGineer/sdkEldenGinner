@@ -15,6 +15,7 @@ Kit de ferramentas pessoal do Eduardo (visão computacional / IA embarcada). Cad
 | Enumeração/controles V4L2 | linuxpy, **somente a camada de baixo nível** | ver "Armadilhas" |
 | Config | TOML (`tomllib` + `tomli-w`) | |
 | Testes | pytest | marker `hardware` para testes com câmera real |
+| Gravação de vídeo | ffmpeg do sistema (`/usr/bin/ffmpeg`, via subprocess) | decidido em 2026-11-19: o opencv-python-headless NÃO tem H.264. Formatos: MP4 H.264 (libx264 padrão, ou h264_nvenc) e MKV MJPG |
 
 Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C++ no futuro, se for rodar dentro de placas embarcadas.
 
@@ -23,6 +24,7 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - GUI: `sdk-cam`
 - Testes de GUI sem tela: rodam no plugin Qt `offscreen` (definido em `tests/test_gui.py`). A mensagem "This plugin does not support propagateSizeHints()" é ruído desse plugin.
 - Listar câmeras/modos/controles: `sdk-cam-listar`
+- Gravar vídeo: `sdk-cam-gravar /dev/video2 --fourcc MJPG --largura 2560 --altura 1440 --fps 30 --segundos 5 [--formato mkv] [--codificador h264_nvenc] [--config arq.toml]` (enquanto o entry point não for reinstalado: `python -m sdk_elden.camera.gravacao ...`)
 - Abrir num modo explícito e medir FPS real: `sdk-cam-capturar /dev/video2 --fourcc MJPG --largura 2560 --altura 1440 --fps 30`
 - Depois de adicionar entry point no `pyproject.toml`: `pip install -e .` de novo
 - Conferência manual: `v4l2-ctl -d /dev/videoN --list-formats-ext --list-ctrls`
@@ -33,6 +35,7 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - Capturas: `raiz/<repo>/<subrepo>/<AAAAMMDD_HHMMSS_mmm>_<camera>_<LxA>.<png|jpg>` + `.json` com o mesmo nome (câmera, modo pedido/negociado, controles, horário com fuso).
 - Config inválida: aviso na abertura, padrões só nesta sessão e o arquivo **não** é sobrescrito.
 - Testes nunca tocam `~/.config` nem `~/capturas` reais (usam `tmp_path`).
+- Vídeos: mesma pasta e mesmo padrão de nome das fotos, `.mp4`/`.mkv` + `.json` (`tipo: video`, config de gravação, câmera, controles, estatísticas). Seção `[gravacao]` no `camera.toml`: `formato` (mp4|mkv), `codificador` (libx264|h264_nvenc), `qualidade_h264` (CRF/CQ, 23), `qualidade_mjpeg` (q:v, 3), `ffmpeg` (caminho absoluto).
 
 ## Convenções
 - Código, comentários e commits em pt-BR.
@@ -52,13 +55,33 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - `cv2.imwrite` tem **dois** modos de falha: retorna `False` (ex.: diretório inexistente) ou lança `cv2.error` (ex.: imagem vazia). `armazenamento` converte os dois em `ErroArmazenamento`.
 - Custo de salvar 2560x1440: PNG ~65 ms, JPG q95 ~8 ms. O salvamento é síncrono na thread da GUI (aceitável para captura manual; para rajada, mover para uma thread).
 - Qt: `QLabel` com quebra de linha dentro de `QFormLayout` não recalcula a altura quando o texto muda (caminhos longos cortados). Deixar esses rótulos fora do form.
-- Qt: ao remontar layouts, `takeAt()` não tira o widget da tela. É preciso `setParent(None)` antes do `deleteLater()`, senão sobram "fantasmas" até o loop de eventos rodar.
+- Qt: ao remontar layouts, `takeAt()` não tira o widget da tela. Usar `hide()` antes do `deleteLater()`, senão sobram "fantasmas" até o loop de eventos rodar. **Não usar `setParent(None)`** (era a solução anterior): o widget vira janela de nível superior por um instante e, no plugin `offscreen`, isso **desativava a janela principal** a cada troca de câmera (foco de teclado perdido). Não confirmado se acontece no Wayland/X11 real; `hide()` evita o risco nos dois.
 - Controles abertos (`ControlesCamera`) e stream do OpenCV coexistem, inclusive com troca de formato (verificado). Reler todos os controles custa ~0,4 ms.
-- **Falha intermitente de `test_captura_real` — causa identificada (2026-11-19)**: `medir_fps` deu 15–18 fps (pedido 30) na Redeagle. O FPS acompanha a luz da cena (brilho médio ~100 → ~18 fps; ~125 → ~27 fps). Com `auto_exposure=3` (Aperture Priority), o firmware alonga o tempo de frame quando a cena está escura, e a Redeagle **não** tem `exposure_dynamic_framerate` para desligar isso. Em manual (`auto_exposure=1`), o FPS ficou em 30 com exposure 78/300/1000/3000. Conclusão: o teste depende da iluminação do ambiente; não é bug da `Captura`.
+- **Falha intermitente de `test_captura_real` — causa identificada (2026-11-19)**: `medir_fps` deu 15–18 fps (pedido 30) na Redeagle. O FPS acompanha a luz da cena (brilho médio ~100 → ~18 fps; ~125 → ~27 fps). Com `auto_exposure=3` (Aperture Priority), o firmware alonga o tempo de frame quando a cena está escura, e a Redeagle **não** tem `exposure_dynamic_framerate` para desligar isso. Em manual (`auto_exposure=1`), o FPS ficou em 30 com exposure 78/300/1000/3000. Conclusão: o teste dependia da iluminação do ambiente; não é bug da `Captura`. A fixture `exposicao_fixa` em `tests/test_captura.py` põe a câmera em manual (`EXPOSICAO_TESTE=78`) durante a medição e passou 15/15 rodadas. **Mas isso NÃO resolveu tudo**: mais tarde, 1 falha em 25 execuções da suíte (MJPG 2560×1440, 15,1 fps, já em manual).
+- **Queda para 15 fps da Redeagle em exposição manual — causa NÃO identificada (2026-11-19).** Em 25 aberturas seguidas (MJPG 2560×1440, manual, exposure 78 confirmado após cada abertura), 13 ficaram abaixo de 24 fps, piorando com o tempo (as últimas 10 todas em 15,1). **Descartado**: decodificação MJPG (sem decodificar, com `CONVERT_RGB=0` e `retrieve` de 0,1 ms, também deu 15,1; decodificando custa ~6 ms) e disputa de banda com a ACER (mesmo barramento USB 2.0 de 480 Mb/s, mas a ACER não transmite nos testes). Exatamente metade da taxa indica que a câmera passa a entregar 1 frame a cada 2. Hipóteses não testadas: aquecimento/limitação do firmware em uso contínuo, reserva de banda isócrona do UVC. Próximo passo: medir com `usbmon` ou intervalos entre frames por timestamp do buffer V4L2, e testar após a câmera esfriar.
 - Redeagle: `gain` estava em 200 (padrão 0) e não muda com a luz, ou seja, não é ganho automático. Origem não confirmada (talvez um ajuste feito pela GUI).
 - Testes de hardware alteram controles reais da câmera e **restauram os originais** em `finally`.
 - Cada câmera UVC expõe 2 nós (captura + metadados). Filtrar por capability `VIDEO_CAPTURE`.
 - Wayland: posicionamento de janela é ignorado pelo compositor.
+- Qt: um `QShortcut` é processado **antes** de um event filter de KeyPress. Por isso não há `QShortcut` de Esc: o `Navegador` trata o Esc (sai do grupo; fora de grupo, sai do Foco).
+- Qt: `QComboBox` emite `activated` também ao trocar o item pelo teclado (↑/↓). O painel escreve no driver por esse sinal (verificado em `test_navegacao.py`).
+- Qt: Shift+Tab chega como `Key_Backtab` pela plataforma, mas como `Key_Tab` + Shift em eventos sintéticos (`QTest`). O filtro aceita os dois.
+- Testes de GUI: sem tela, um `QMessageBox` modal espera um clique para sempre. Teste que pode abrir um deve trocá-lo por `pytest.fail` (a suíte travava quando a câmera estava ocupada pelo `sdk-cam` aberto).
+- Câmera ocupada por outro processo (ex.: `sdk-cam` aberto) faz os testes `hardware` falharem com "em uso por outro processo?". Fechar o `sdk-cam` antes de `pytest`.
+- Qt: o `QSplitter` **ignora mudanças de `minimumSizeHint`** de um filho já montado (nem `setSizes` reaplica). Só respeita `setMinimumWidth` explícito. Por isso `PainelControles._ajustar_largura` fixa o mínimo do próprio painel.
+- Qt: widgets recém-criados dentro de um pai **já visível** ficam ocultos até o loop de eventos rodar, e o Qt ignora ocultos no `minimumSizeHint` (medido na hora dava 32 px). Medir de novo com `QTimer.singleShot(0, ...)`.
+- Qt: o `QScrollArea` não repassa ao layout a largura do conteúdo. Sem rolagem horizontal e sem mínimo medido, a grade é cortada.
+- QSS: um seletor de descendente com id (`#painel QWidget`) vence `QPushButton` por especificidade e repinta botões e listas. Pôr fundo só nos contêineres, por objectName.
+- QSS: propriedade dinâmica (`[aoVivo="true"]`) só reaplica com `unpolish`/`polish`.
+- QSS: fundo em subclasse de `QWidget` exige `WA_StyledBackground`.
+- **`QTest.qWait` segura o GIL** (PySide6): uma QThread em Python (ex.: `ThreadCaptura`) quase não roda enquanto o script principal espera com ele (0 frames em 3 s, contra 81 com `time.sleep` + `processEvents`). Nos testes/scripts com câmera, esperar com `time.sleep` + `app.processEvents()`. O app real (`app.exec()`) não tem o problema.
+- Qt: widget dentro de `QToolBar` aparece/some pela **QAction devolvida por `addWidget`** (`setVisible`); `show()`/`hide()` no widget não funciona (fica sem geometria). Janela nunca mostrada (`show()`) também não diagrama a barra.
+- O instante de cada frame é tomado na `ThreadCaptura`, logo após `ler()` (sinal `novo_frame(QImage, frame, instante)`): tomado na GUI, o atraso da fila de eventos viraria buraco/repetição no vídeo.
+- Fechar o vídeo (ffmpeg + `+faststart`, que reescreve o arquivo inteiro) roda numa thread; o `closeEvent` espera explicitamente (`TEMPO_MAX_FINALIZAR_S` + 5 s) para não deixar `.tmp` sem índice.
+- opencv-python-headless 5.1: `VideoWriter` grava MJPG/XVID/mp4v/FFV1, mas **não** avc1/H264/X264 (testado). Por isso a gravação usa o ffmpeg do sistema.
+- Gravação a taxa fixa com câmera instável: `RelogioCFR` repete ou descarta frames pelo horário de chegada, para o vídeo manter a duração real (sem isso, 15 fps reais gravados como 30 tocariam 2x mais rápido).
+- O vídeo começa no 1º frame, que chega ~0,2 s depois de abrir o stream: gravar "5 s" dá ~4,8 s de vídeo (correto). Testes de duração comparam com o intervalo entre o 1º e o último frame.
+- Velocidade de codificação 2560×1440 (10 s de `testsrc2`, 2026-11-19): libx264 veryfast 1,6 s; h264_nvenc 1,9 s; libx264 ultrafast 0,8 s; mjpeg 0,8 s. Câmera real, 5 s: libx264 16 MB, nvenc 15 MB, MKV MJPG 30 MB, 0 frames descartados.
 
 ## Hardware de teste (máquina do Eduardo)
 - `/dev/video0`: ACER HD User Facing (uvcvideo), MJPG/YUYV até 1280x720
@@ -72,6 +95,10 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 5. [x] GUI: painel de controles dinâmico
 6. [x] `utils/config.py` + `camera/armazenamento.py` (`raiz/<repo>/<subrepo>/` + sidecar JSON) + janela de config
 7. [ ] Registrar no mapa do `~/dev`
+8. [x] Redesign: tema cinza (QSS + Fusion), barra superior com Câmeras/Controles/Foco (Ctrl+1/2/F, Esc), modo compacto abaixo de 1200 px, barra de captura sob o preview. Mockup: https://claude.ai/artifact/31aSY5FT5zES6qQ6WD7MRL
+9. [x] Painel de controles agrupado (tabela `GRUPOS` por nome + "Outros") com marca "≠ padrão"; setas ↑/↓ nos spinbox; navegação por teclado em toda a janela
+10. [x] `camera/gravacao.py` (Gravador via ffmpeg, RelogioCFR, sidecar) + CLI `sdk-cam-gravar`
+11. [x] GUI: botão Gravar (Ctrl+R), indicador ● REC na barra superior (tempo + descartes), opções de vídeo em Configurações
 
 ## Inventário de reaproveitáveis
 ### Transversal (`sdk_elden.utils`)
@@ -98,5 +125,13 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - `sdk_elden.camera.gui.painel_controles.PainelControles`: painel dinâmico (`definir_camera`, `reler`, `fechar`); relê todos os controles após cada escrita.
 - `sdk_elden.camera.armazenamento.salvar_captura(frame, MetadadosCaptura, ConfigArmazenamento)`: grava imagem + sidecar JSON (atômico, nunca sobrescreve). Também: `validar_config`, `diretorio_destino`, `slug`, `ErroArmazenamento`.
 - `sdk_elden.camera.gui.janela_config.JanelaConfig(cfg, caminho_arquivo)`: diálogo de raiz/repo/subrepo/formato com validação ao vivo; `subpastas(pasta)` sugere nomes existentes.
+- `sdk_elden.camera.gui.tema`: paleta cinza (constantes `FUNDO`, `PAINEL`, `TEXTO`...), `QSS`, `paleta()`, `aplicar_tema(app)` (fixa o estilo Fusion). Cores por objectName (`btnCapturar`, `tituloSecao`, `painelEsquerdo`...).
+- `JanelaPrincipal.acao_cameras` / `acao_controles` / `acao_foco`: QActions alternáveis dos painéis. Modo compacto: `LARGURA_COMPACTA=1200`, age só ao cruzar o limite e restaura o estado anterior.
+- `sdk_elden.camera.gui.navegacao.GrupoNavegavel(titulo)` / `Navegador(janela, grupos, ao_esc_fora)`: navegação em dois níveis. Tab entre grupos (espera `JANELA_DUPLO_TAB_MS=250` para distinguir do duplo Tab, decisão do usuário), Tab Tab entra, Tab/Shift+Tab dentro, Esc sai, W/S = ↑/↓, X marca caixa, Enter aciona botão, R chama `restaurar()` do ancestral. Paradas registradas explicitamente (`adicionar_parada`). Só age na janela dona; letras em `QLineEdit` continuam texto.
+- `sdk_elden.camera.gui.painel_controles.agrupar(infos)` / `GRUPOS` / `ORDEM_GRUPOS`: agrupamento por nome (controle fora da tabela vai para "Outros", nunca some). `atalhos(info)` / `descricao(info)`: textos do tooltip. Cada controle tem uma parada só (`EditorControle.entrada`); slider e ↺ ficam fora do Tab.
+- `sdk_elden.camera.gui.tema.DIR_ICONES`: setas SVG (`icones/`, em package-data) usadas no QSS por caminho absoluto.
+- `sdk_elden.camera.gravacao.Gravador(cfg, destino, largura, altura, fps, fila=8)`: `escrever(frame, t)` (não bloqueia; fila cheia = descarte contado), `finalizar()` (arquivo .tmp → final), `cancelar()`, `estatisticas()`, `erro`. `iniciar_gravacao(cfg_arm, cfg_grav, meta)` / `finalizar_com_sidecar(g, cfg_arm, meta)`. `RelogioCFR(fps).vezes(t)`, `montar_comando(...)`, `ConfigGravacao`, `ErroGravacao`.
+- `sdk_elden.camera.armazenamento.nome_base(agora, camera_nome, l, a)` / `dados_camera(meta)` / `escrever_sidecar(destino, dados)`: partes comuns de foto e vídeo.
+- `JanelaPrincipal.iniciar_gravacao()` / `parar_gravacao()` / `alternar_gravacao()` / `gravando` / `rec_visivel`: gravação na GUI; para sozinha ao parar o stream, trocar de câmera ou fechar a janela. `JanelaConfig(..., cfg_grav=)` + `config_gravacao()`: seção de vídeo.
 - `PainelControles.estado_atual()`: controles lidos agora (usado no sidecar).
 - `sdk_elden.camera.gui.painel_controles.EditorControle(info, ao_escrever, ao_restaurar)`: widget de 1 controle conforme o tipo (slider+spin, checkbox, combo, hex); `atualizar(info)` sem disparar escrita.

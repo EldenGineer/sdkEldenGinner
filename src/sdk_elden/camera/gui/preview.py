@@ -7,8 +7,10 @@ coalescidas pelo Qt. Se a GUI ficar mais lenta que a câmera, só o frame mais n
 from __future__ import annotations
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QSizePolicy, QWidget
+
+from sdk_elden.camera.gui import tema
 
 
 class WidgetPreview(QWidget):
@@ -38,9 +40,9 @@ class WidgetPreview(QWidget):
 
     def paintEvent(self, _evento) -> None:
         p = QPainter(self)
-        p.fillRect(self.rect(), Qt.GlobalColor.black)
+        p.fillRect(self.rect(), QColor(tema.PREVIEW))
         if self._imagem is None:
-            p.setPen(Qt.GlobalColor.gray)
+            p.setPen(QColor(tema.TEXTO_DESAB))
             p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "sem imagem")
         else:
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)

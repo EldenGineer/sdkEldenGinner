@@ -20,12 +20,16 @@ dev = ["pytest"]
 [project.scripts]
 sdk-cam-listar = "sdk_elden.camera.dispositivos:main"
 sdk-cam-capturar = "sdk_elden.camera.captura:main"
+sdk-cam-gravar = "sdk_elden.camera.gravacao:main"
 
 [project.gui-scripts]
 sdk-cam = "sdk_elden.camera.gui.janela_principal:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"sdk_elden.camera.gui" = ["icones/*.svg"]  # setas do QSS (tema.py)
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
