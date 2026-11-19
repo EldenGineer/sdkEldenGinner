@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sdk-elden"
-version = "1.0.0"
+version = "1.0.1"
 description = "sdkEldenGinner — kit de ferramentas pessoal (visão computacional / IA embarcada)"
 requires-python = ">=3.12"
 dependencies = [
