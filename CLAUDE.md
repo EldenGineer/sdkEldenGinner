@@ -20,6 +20,7 @@ Kit de ferramentas pessoal do Eduardo (visão computacional / IA embarcada). Cad
 Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C++ no futuro, se for rodar dentro de placas embarcadas.
 
 ## Comandos
+- **Instalar em outra máquina**: `git clone ... && cd sdkEldenGinner && scripts/instalar.sh` (pyenv, padrão) ou `scripts/instalar.sh --venv local` (`.venv/` sem pyenv). `--simular` mostra os passos sem executar; `--atalho` cria a entrada do menu; `--sem-testes`. Idempotente. Nunca roda sudo: imprime `sudo apt install ...` / `sudo usermod -aG video $USER` quando falta algo.
 - Testes: `pytest` (só os testes sem hardware: `pytest -m "not hardware"`)
 - GUI: `sdk-cam`
 - Testes de GUI sem tela: rodam no plugin Qt `offscreen` (definido em `tests/test_gui.py`). A mensagem "This plugin does not support propagateSizeHints()" é ruído desse plugin.
@@ -63,6 +64,8 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - **Falha intermitente de `test_captura_real` — causa identificada (2026-11-19)**: `medir_fps` deu 15–18 fps (pedido 30) na Redeagle. O FPS acompanha a luz da cena (brilho médio ~100 → ~18 fps; ~125 → ~27 fps). Com `auto_exposure=3` (Aperture Priority), o firmware alonga o tempo de frame quando a cena está escura, e a Redeagle **não** tem `exposure_dynamic_framerate` para desligar isso. Em manual (`auto_exposure=1`), o FPS ficou em 30 com exposure 78/300/1000/3000. Conclusão: o teste dependia da iluminação do ambiente; não é bug da `Captura`. A fixture `exposicao_fixa` em `tests/test_captura.py` põe a câmera em manual (`EXPOSICAO_TESTE=78`) durante a medição e passou 15/15 rodadas. **Mas isso NÃO resolveu tudo**: mais tarde, 1 falha em 25 execuções da suíte (MJPG 2560×1440, 15,1 fps, já em manual).
 - **Queda para 15 fps da Redeagle em exposição manual — causa NÃO identificada (2026-11-19).** Em 25 aberturas seguidas (MJPG 2560×1440, manual, exposure 78 confirmado após cada abertura), 13 ficaram abaixo de 24 fps, piorando com o tempo (as últimas 10 todas em 15,1). **Descartado**: decodificação MJPG (sem decodificar, com `CONVERT_RGB=0` e `retrieve` de 0,1 ms, também deu 15,1; decodificando custa ~6 ms) e disputa de banda com a ACER (mesmo barramento USB 2.0 de 480 Mb/s, mas a ACER não transmite nos testes). Exatamente metade da taxa indica que a câmera passa a entregar 1 frame a cada 2. Hipóteses não testadas: aquecimento/limitação do firmware em uso contínuo, reserva de banda isócrona do UVC. Próximo passo: medir com `usbmon` ou intervalos entre frames por timestamp do buffer V4L2, e testar após a câmera esfriar.
 - Redeagle: `gain` estava em 200 (padrão 0) e não muda com a luz, ou seja, não é ganho automático. Origem não confirmada (talvez um ajuste feito pela GUI).
+- Bash com `set -o pipefail`: `cmd | grep -q padrão` falha com rc 141 (SIGPIPE) quando o grep acha a linha e sai antes de `cmd` terminar de escrever (reproduzido com `pyenv versions --bare`, 3.12.3 na linha 11 de 24). Capturar a saída numa variável e usar `grep -q ... <<<"$var"`.
+- Acesso a `/dev/video*` no desktop vem por ACL da sessão (o `+` em `crw-rw----+`), não do grupo `video` (o usuário não está nele). Por SSH/sem sessão gráfica, só o grupo `video` dá acesso; `instalar.sh` testa leitura+escrita de fato.
 - Testes de hardware alteram controles reais da câmera e **restauram os originais** em `finally`.
 - Cada câmera UVC expõe 2 nós (captura + metadados). Filtrar por capability `VIDEO_CAPTURE`.
 - Wayland: posicionamento de janela é ignorado pelo compositor.
@@ -108,6 +111,9 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 13. [x] GUI: modo rajada (Ctrl+B): intervalo/quantidade na barra de captura (sessão), padrões em Configurações, indicador ◉ RAJADA (contador, próxima, descartes), resumo ao terminar
 
 ## Inventário de reaproveitáveis
+### Deploy
+- `scripts/instalar.sh`: checa sistema (ffmpeg em `/usr/bin/ffmpeg`, pacotes apt, acesso às câmeras), cria o ambiente (pyenv `sdkEldenGinner` com Python 3.12.3, ou `.venv`), instala `requirements.lock` + o pacote (`--no-deps -e`), confere imports e o conflito opencv-python × PySide6, roda os testes sem hardware.
+
 ### Transversal (`sdk_elden.utils`)
 - `utils.config.carregar_secao(caminho, secao, Dataclass)` / `salvar_secao(caminho, secao, obj)`: TOML ↔ dataclass, com checagem de chaves/tipos, escrita atômica, preservando outras seções. `ErroConfig`. `DIR_CONFIG = ~/.config/sdk_elden`.
 - `utils.config.de_dict(Dataclass, dict)`: validação de dict → dataclass (campos str/int/float/bool).
