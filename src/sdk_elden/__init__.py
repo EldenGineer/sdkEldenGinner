@@ -1,0 +1,1 @@
+"""sdkEldenGinner — kit de ferramentas."""

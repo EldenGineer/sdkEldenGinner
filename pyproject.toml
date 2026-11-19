@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sdk-elden"
+version = "0.1.0"
+description = "sdkEldenGinner — kit de ferramentas pessoal (visão computacional / IA embarcada)"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6",
+    "opencv-python-headless",  # headless: o opencv-python normal traz plugins Qt que conflitam com o PySide6
+    "linuxpy",
+    "tomli-w",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+sdk-cam-listar = "sdk_elden.camera.dispositivos:main"
+sdk-cam-capturar = "sdk_elden.camera.captura:main"
+
+[project.gui-scripts]
+sdk-cam = "sdk_elden.camera.gui.janela_principal:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["hardware: precisa de câmeras V4L2 reais conectadas"]

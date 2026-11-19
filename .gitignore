@@ -1,0 +1,47 @@
+# Python / build
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ambientes virtuais locais (o padrão do projeto é o venv pyenv, fora do repo)
+.venv/
+venv/
+
+# capturas e config local não vão para o repo
+# (o padrão é ~/capturas e ~/.config/sdk_elden, fora do repo; isto cobre cópias/testes manuais aqui dentro)
+capturas/
+*.local.toml
+camera.toml
+
+# mídia gerada (imagens/vídeos de câmera). Se um dia houver imagem de documentação,
+# colocar em docs/ e liberar com uma exceção (!docs/**)
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.tif
+*.tiff
+*.mp4
+*.avi
+*.mkv
+*.mov
+!docs/**
+
+# segredos e logs
+.env
+.env.*
+*.log
+
+# editores / sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# configuração local do Claude Code
+.claude/settings.local.json
