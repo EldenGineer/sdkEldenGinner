@@ -6,6 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -25,6 +26,7 @@ from sdk_elden.camera.gravacao import (
     ErroGravacao,
     validar_config_gravacao,
 )
+from sdk_elden.camera.rajada import INTERVALO_MIN_S, ConfigRajada, ErroRajada, validar_config_rajada
 from sdk_elden.camera.armazenamento import (
     FORMATOS,
     ConfigArmazenamento,
@@ -41,14 +43,33 @@ def subpastas(pasta: Path) -> list[str]:
     return sorted(p.name for p in pasta.iterdir() if p.is_dir() and not p.name.startswith("."))
 
 
+def campos_rajada() -> tuple[QDoubleSpinBox, QSpinBox]:
+    """Intervalo (s) e quantidade (0 = sem limite), com os limites de camera/rajada.py.
+    Usados na janela de configuração e na barra de captura (mesmos limites nos dois)."""
+    intervalo = QDoubleSpinBox()
+    intervalo.setDecimals(2)
+    intervalo.setRange(INTERVALO_MIN_S, 86400)
+    intervalo.setSingleStep(0.1)
+    intervalo.setSuffix(" s")
+    intervalo.setToolTip(f"Tempo entre fotos da rajada (mínimo {INTERVALO_MIN_S:g} s). "
+                         "PNG 2560x1440 aguenta ~15 fotos/s; mais rápido que isso, use JPG.")
+    quantidade = QSpinBox()
+    quantidade.setRange(0, 1_000_000)
+    quantidade.setSpecialValueText("∞")  # 0 = até parar
+    quantidade.setSuffix(" fotos")
+    quantidade.setToolTip("Fotos da rajada; 0 (∞) = até parar")
+    return intervalo, quantidade
+
+
 class JanelaConfig(QDialog):
     def __init__(self, cfg: ConfigArmazenamento, caminho_arquivo: Path, parent=None,
-                 cfg_grav: ConfigGravacao | None = None):
+                 cfg_grav: ConfigGravacao | None = None, cfg_rajada: ConfigRajada | None = None):
         super().__init__(parent)
         self.setWindowTitle("Configurações")
         self.setMinimumWidth(560)
         self._cfg = cfg
         self._cfg_grav = cfg_grav or ConfigGravacao()
+        self._cfg_rajada = cfg_rajada or ConfigRajada()
 
         self.ed_raiz = QLineEdit(cfg.raiz)
         btn_raiz = QPushButton("…")
@@ -101,6 +122,12 @@ class JanelaConfig(QDialog):
         form_video.addRow("Qualidade H.264", self.sp_qualidade_h264)
         form_video.addRow("Qualidade MJPG", self.sp_qualidade_mjpeg)
 
+        # --- rajada (valores padrão; a barra de captura ajusta só para a sessão) -----
+        self.sp_intervalo, self.sp_quantidade = campos_rajada()
+        form_rajada = QFormLayout()
+        form_rajada.addRow("Intervalo", self.sp_intervalo)
+        form_rajada.addRow("Quantidade", self.sp_quantidade)
+
         self.botoes = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         self.botoes.accepted.connect(self.accept)
         self.botoes.rejected.connect(self.reject)
@@ -114,6 +141,8 @@ class JanelaConfig(QDialog):
         layout.addLayout(form)
         layout.addWidget(QLabel("<b>Vídeo</b> (ffmpeg do sistema; mesma pasta das fotos)"))
         layout.addLayout(form_video)
+        layout.addWidget(QLabel("<b>Rajada</b> (padrões; a barra de captura ajusta só para a sessão)"))
+        layout.addLayout(form_rajada)
         layout.addWidget(QLabel("<b>Destino das capturas</b>"))
         layout.addWidget(self.lbl_destino)
         layout.addWidget(lbl_arquivo)
@@ -130,13 +159,16 @@ class JanelaConfig(QDialog):
         self.cb_codificador.setCurrentIndex(self.cb_codificador.findData(g.codificador))
         self.sp_qualidade_h264.setValue(g.qualidade_h264)
         self.sp_qualidade_mjpeg.setValue(g.qualidade_mjpeg)
+        self.sp_intervalo.setValue(self._cfg_rajada.intervalo_s)
+        self.sp_quantidade.setValue(self._cfg_rajada.quantidade)
 
         self.ed_raiz.textChanged.connect(self._preencher_repos)
         self.cb_repo.currentTextChanged.connect(self._preencher_subrepos)
         for sinal in (self.ed_raiz.textChanged, self.cb_repo.currentTextChanged,
                       self.cb_subrepo.currentTextChanged, self.cb_formato.currentTextChanged,
                       self.sp_qualidade.valueChanged, self.cb_video_formato.currentIndexChanged,
-                      self.cb_codificador.currentIndexChanged):
+                      self.cb_codificador.currentIndexChanged, self.sp_intervalo.valueChanged,
+                      self.sp_quantidade.valueChanged):
             sinal.connect(self._validar)
         self._validar()
 
@@ -181,6 +213,9 @@ class JanelaConfig(QDialog):
             qualidade_mjpeg=self.sp_qualidade_mjpeg.value(),
         )
 
+    def config_rajada(self) -> ConfigRajada:
+        return replace(self._cfg_rajada, intervalo_s=self.sp_intervalo.value(), quantidade=self.sp_quantidade.value())
+
     def _validar(self) -> None:
         self.sp_qualidade.setEnabled(self.cb_formato.currentText() == "jpg")
         mp4 = self.cb_video_formato.currentData() == "mp4"
@@ -191,7 +226,8 @@ class JanelaConfig(QDialog):
         try:
             validar_config(cfg)
             validar_config_gravacao(self.config_gravacao())
-        except (ErroArmazenamento, ErroGravacao) as e:
+            validar_config_rajada(self.config_rajada())
+        except (ErroArmazenamento, ErroGravacao, ErroRajada) as e:
             self.lbl_erro.setText(str(e))
             self.lbl_destino.setText("—")
             self.botoes.button(QDialogButtonBox.StandardButton.Save).setEnabled(False)

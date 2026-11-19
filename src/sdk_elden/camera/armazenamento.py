@@ -133,9 +133,13 @@ def _escrever_atomico_texto(destino: Path, texto: str) -> None:
 
 
 def salvar_captura(
-    frame: np.ndarray, meta: MetadadosCaptura, cfg: ConfigArmazenamento, agora: datetime | None = None
+    frame: np.ndarray, meta: MetadadosCaptura, cfg: ConfigArmazenamento, agora: datetime | None = None,
+    extra: dict | None = None,
 ) -> Path:
-    """Grava imagem + sidecar JSON. Retorna o caminho da imagem."""
+    """Grava imagem + sidecar JSON. Retorna o caminho da imagem.
+
+    `extra`: campos a mais no sidecar (ex.: {"rajada": {...}}); não pode sobrescrever os padrão.
+    """
     validar_config(cfg)
     agora = agora or datetime.now().astimezone()
     pasta = diretorio_destino(cfg)
@@ -159,6 +163,11 @@ def salvar_captura(
         **dados_camera(meta),
         "resolucao_frame": [largura, altura],
     }
+    if extra:
+        repetidas = set(extra) & set(dados)
+        if repetidas:
+            raise ErroArmazenamento(f"campos extras sobrescreveriam o sidecar: {sorted(repetidas)}")
+        dados.update(extra)
     _escrever_atomico_imagem(imagem, frame, params)
     escrever_sidecar(sidecar, dados)
     return imagem

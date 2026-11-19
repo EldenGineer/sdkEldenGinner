@@ -52,7 +52,9 @@ from sdk_elden.camera.gravacao import (
     finalizar_com_sidecar,
     iniciar_gravacao,
 )
-from sdk_elden.camera.gui.janela_config import JanelaConfig
+from sdk_elden.camera.gui.controlador_rajada import ControladorRajada, ResumoRajada
+from sdk_elden.camera.gui.janela_config import JanelaConfig, campos_rajada
+from sdk_elden.camera.rajada import SECAO_RAJADA, TEMPO_MAX_FECHAR_S, ConfigRajada, ErroRajada
 from sdk_elden.camera.gui.navegacao import DICA_DENTRO, GrupoNavegavel, Navegador
 from sdk_elden.camera.gui.tema import aplicar_tema
 from sdk_elden.camera.gui.painel_controles import PainelControles
@@ -64,6 +66,7 @@ TEMPO_MAX_PARADA_MS = 3000  # espera explícita pelo fim da thread ao parar/troc
 LARGURA_COMPACTA = 1200     # abaixo disto (px) os painéis se ocultam ao cruzar o limite
 LARGURA_MIN_ESQUERDO = 240
 INTERVALO_REC_MS = 500     # atualização do indicador ● REC
+INTERVALO_RAJADA_MS = 200  # atualização do indicador ◉ RAJADA (contador e contagem regressiva)
 
 
 class _SinaisGravacao(QObject):
@@ -82,8 +85,15 @@ class JanelaPrincipal(QMainWindow):
         self.caminho_config = caminho_config
         self.cfg, erro_cfg = self._carregar_config()
         self.cfg_grav, erro_grav = self._carregar_config_gravacao()
-        erro_cfg = "\n".join(e for e in (erro_cfg, erro_grav) if e) or None
+        self.cfg_rajada, erro_raj = self._carregar_secao_ou_padrao(SECAO_RAJADA, ConfigRajada)
+        erro_cfg = "\n".join(e for e in (erro_cfg, erro_grav, erro_raj) if e) or None
+        self.rajada = ControladorRajada(self)
+        self.rajada.foto_salva.connect(self._ao_foto_rajada)
+        self.rajada.falhou.connect(lambda m: self.statusBar().showMessage(f"rajada: falha ao salvar: {m}", 8000))
+        self.rajada.parou.connect(self._ao_rajada_parar)
+        self.rajada.terminou.connect(self._ao_rajada_terminar)
         self._gravador: Gravador | None = None
+        self._rajada_salvando = False
         self._grav_contexto: tuple | None = None  # (cfg_arm, meta) da gravação em curso, p/ o sidecar
         self._finalizacoes: list[threading.Thread] = []
         self._sinais_grav = _SinaisGravacao(self)
@@ -165,10 +175,14 @@ class JanelaPrincipal(QMainWindow):
         self.lbl_destino.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.lbl_ultima = QLabel()
         self.lbl_ultima.setObjectName("lblUltima")
+        # nome longo cede largura (como o destino): com rajada/gravar, a barra ficou apertada e o
+        # destino era cortado. Fica embaixo do destino, na mesma coluna flexível.
+        self.lbl_ultima.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         coluna_destino = QVBoxLayout()
         coluna_destino.setSpacing(2)
         coluna_destino.addWidget(titulo_destino)
         coluna_destino.addWidget(self.lbl_destino)
+        coluna_destino.addWidget(self.lbl_ultima)
         self.btn_capturar.setToolTip(f"Espaço (de qualquer lugar) ou Enter\n{DICA_DENTRO}")
         self.btn_gravar = QPushButton("Gravar  [Ctrl+R]")
         self.btn_gravar.setObjectName("btnGravar")
@@ -176,13 +190,30 @@ class JanelaPrincipal(QMainWindow):
         self.btn_gravar.setEnabled(False)
         self.btn_gravar.setToolTip(f"Ctrl+R (de qualquer lugar) ou Enter: inicia/para a gravação de vídeo\n{DICA_DENTRO}")
         QShortcut(QKeySequence("Ctrl+R"), self, activated=self.alternar_gravacao)
+        self.sp_intervalo, self.sp_quantidade = campos_rajada()
+        self.sp_intervalo.setValue(self.cfg_rajada.intervalo_s)
+        self.sp_quantidade.setValue(self.cfg_rajada.quantidade)
+        self.sp_intervalo.setMaximumWidth(96)   # sobra largura para o destino na barra
+        self.sp_quantidade.setMaximumWidth(116)
+        for w in (self.sp_intervalo, self.sp_quantidade):
+            w.setToolTip(f"{w.toolTip()}\nVale para esta sessão (padrão em Configurações) · W/S: ajustar\n{DICA_DENTRO}")
+        self.btn_rajada = QPushButton("Rajada  [Ctrl+B]")
+        self.btn_rajada.setObjectName("btnRajada")
+        self.btn_rajada.clicked.connect(self.alternar_rajada)
+        self.btn_rajada.setEnabled(False)
+        self.btn_rajada.setToolTip(f"Ctrl+B (de qualquer lugar) ou Enter: inicia/para fotos automáticas\n{DICA_DENTRO}")
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=self.alternar_rajada)
         self.grupo_captura = GrupoNavegavel()  # sem título: a barra já mostra "DESTINO"
         linha_captura = QHBoxLayout()
         linha_captura.addLayout(coluna_destino, 1)
-        linha_captura.addWidget(self.lbl_ultima)
+        linha_captura.addWidget(self.sp_intervalo)
+        linha_captura.addWidget(self.sp_quantidade)
+        linha_captura.addWidget(self.btn_rajada)
         linha_captura.addWidget(self.btn_gravar)
         linha_captura.addWidget(self.btn_capturar)
         self.grupo_captura.corpo.addLayout(linha_captura)
+        for w in (self.sp_intervalo, self.sp_quantidade, self.btn_rajada):
+            self.grupo_captura.adicionar_parada(w)
         self.grupo_captura.adicionar_parada(self.btn_gravar)
         self.grupo_captura.adicionar_parada(self.btn_capturar)
         barra_captura = QFrame()
@@ -218,7 +249,7 @@ class JanelaPrincipal(QMainWindow):
         self._montar_barra_topo()
         self.statusBar().addPermanentWidget(QLabel(
             "Tab: grupos · Tab Tab: entrar · Esc: sair · W/S: ajustar · X: marcar · R: padrão · "
-            "Ctrl+R: gravar · Ctrl+1/2: painéis · Ctrl+F: foco"))
+            "Ctrl+R: gravar · Ctrl+B: rajada · Ctrl+1/2: painéis · Ctrl+F: foco"))
         # Esc: dentro de um grupo sai dele; fora, sai do modo Foco (não há QShortcut de Esc:
         # ele seria processado antes do filtro e o "sair do grupo" nunca aconteceria)
         self.navegador = Navegador(self, self._grupos_navegacao,
@@ -270,6 +301,13 @@ class JanelaPrincipal(QMainWindow):
         # show()/hide() no próprio widget não funciona (ele nem é posicionado)
         self._acao_rec = barra.addWidget(self.lbl_rec)
         self._acao_rec.setVisible(False)
+        self.lbl_rajada = QLabel()
+        self.lbl_rajada.setObjectName("lblRajada")
+        self._acao_rajada = barra.addWidget(self.lbl_rajada)  # visibilidade pela ação (ver lbl_rec)
+        self._acao_rajada.setVisible(False)
+        self._timer_rajada = QTimer(self)
+        self._timer_rajada.setInterval(INTERVALO_RAJADA_MS)
+        self._timer_rajada.timeout.connect(self._atualizar_rajada)
         self._timer_rec = QTimer(self)
         self._timer_rec.setInterval(INTERVALO_REC_MS)
         self._timer_rec.timeout.connect(self._atualizar_rec)
@@ -350,6 +388,12 @@ class JanelaPrincipal(QMainWindow):
         except ErroConfig as e:
             return ConfigArmazenamento(), str(e)
 
+    def _carregar_secao_ou_padrao(self, secao: str, classe):
+        try:
+            return carregar_secao(self.caminho_config, secao, classe), None
+        except ErroConfig as e:
+            return classe(), str(e)
+
     def _carregar_config_gravacao(self) -> tuple[ConfigGravacao, str | None]:
         try:
             return carregar_secao(self.caminho_config, SECAO_GRAVACAO, ConfigGravacao), None
@@ -365,12 +409,17 @@ class JanelaPrincipal(QMainWindow):
         self.lbl_destino.setToolTip(texto)
 
     def abrir_config(self) -> None:
-        dialogo = JanelaConfig(self.cfg, self.caminho_config, self, cfg_grav=self.cfg_grav)
+        dialogo = JanelaConfig(self.cfg, self.caminho_config, self, cfg_grav=self.cfg_grav, cfg_rajada=self.cfg_rajada)
         if dialogo.exec() == JanelaConfig.DialogCode.Accepted:
             self.cfg = dialogo.config()
             self.cfg_grav = dialogo.config_gravacao()  # vale para a PRÓXIMA gravação
             salvar_secao(self.caminho_config, SECAO_CONFIG, self.cfg)
             salvar_secao(self.caminho_config, SECAO_GRAVACAO, self.cfg_grav)
+            self.cfg_rajada = dialogo.config_rajada()
+            salvar_secao(self.caminho_config, SECAO_RAJADA, self.cfg_rajada)
+            if not self.rajada.ativo:  # padrões novos também na barra (no meio de uma rajada, não mexe)
+                self.sp_intervalo.setValue(self.cfg_rajada.intervalo_s)
+                self.sp_quantidade.setValue(self.cfg_rajada.quantidade)
             self._atualizar_destino()
 
     def capturar(self) -> Path | None:
@@ -399,6 +448,68 @@ class JanelaPrincipal(QMainWindow):
             modo_negociado=self._negociado,
             controles=tuple(self.painel_controles.estado_atual()),
         )
+
+    # --- rajada ---------------------------------------------------------------------
+    @property
+    def rajada_visivel(self) -> bool:
+        return self._acao_rajada.isVisible()
+
+    def alternar_rajada(self) -> None:
+        if self.rajada.ativo:
+            self.rajada.parar()
+        elif self.btn_rajada.isEnabled():
+            self.iniciar_rajada()
+
+    def iniciar_rajada(self) -> bool:
+        cam = self.camera_atual()
+        if self.rajada.ativo or cam is None or self._thread is None or self._negociado is None:
+            return False
+        cfg = ConfigRajada(intervalo_s=self.sp_intervalo.value(), quantidade=self.sp_quantidade.value())
+        try:
+            self.rajada.iniciar(self.cfg, cfg, cam.nome, lambda: self._metadados(cam))
+        except ErroRajada as e:
+            QMessageBox.critical(self, "Rajada", str(e))
+            return False
+        self._rajada_salvando = True
+        self._marcar_botao(self.btn_rajada, "Parar rajada  [Ctrl+B]", True)
+        for w in (self.sp_intervalo, self.sp_quantidade):
+            w.setEnabled(False)
+        self._atualizar_rajada()
+        self._timer_rajada.start()
+        return True
+
+    def _ao_rajada_parar(self) -> None:
+        """Rajada encerrada (quantidade ou botão); as últimas fotos ainda podem estar sendo salvas."""
+        self._marcar_botao(self.btn_rajada, "Rajada  [Ctrl+B]", False)
+        for w in (self.sp_intervalo, self.sp_quantidade):
+            w.setEnabled(True)
+        self._atualizar_rajada()
+
+    def _ao_foto_rajada(self, arquivo: Path) -> None:
+        self.lbl_ultima.setText(f"última: {arquivo.name}")
+        self.lbl_ultima.setToolTip(str(arquivo))
+
+    def _ao_rajada_terminar(self, r: ResumoRajada) -> None:
+        self._rajada_salvando = False
+        self._timer_rajada.stop()
+        self._acao_rajada.setVisible(False)
+        resumo = (f"rajada concluída: {r.salvas} salvas" + (f", {r.descartadas} descartadas (fila cheia)" if r.descartadas else "")
+                  + (f", {r.perdidas} horários sem frame" if r.perdidas else "") + (f", {r.falhas} falhas" if r.falhas else ""))
+        self.statusBar().showMessage(resumo, 10000)
+        if r.falhas:
+            QMessageBox.critical(self, "Rajada", f"{r.falhas} foto(s) não foram salvas. Primeira falha:\n{r.primeira_falha}")
+
+    def _atualizar_rajada(self) -> None:
+        texto = self.rajada.texto_status() or ("salvando fotos…" if self._rajada_salvando else "")
+        self.lbl_rajada.setText(texto)
+        self._acao_rajada.setVisible(bool(texto))
+
+    @staticmethod
+    def _marcar_botao(botao: QPushButton, texto: str, ativo: bool) -> None:
+        botao.setText(texto)
+        botao.setProperty("ativo", ativo)
+        botao.style().unpolish(botao)
+        botao.style().polish(botao)
 
     # --- gravação de vídeo ------------------------------------------------------
     @property
@@ -604,6 +715,7 @@ class JanelaPrincipal(QMainWindow):
     def _ao_frame(self, imagem, frame, instante: float) -> None:
         self.ultimo_frame = frame
         self.preview.mostrar(imagem)
+        self.rajada.ao_frame(frame, instante)
         if self._gravador is not None:
             try:
                 self._gravador.escrever(frame, instante)
@@ -612,6 +724,7 @@ class JanelaPrincipal(QMainWindow):
         if not self.btn_capturar.isEnabled():
             self.btn_capturar.setEnabled(True)  # só com frame do stream ATUAL
             self.btn_gravar.setEnabled(True)
+            self.btn_rajada.setEnabled(True)
 
     def _ao_erro(self, mensagem: str) -> None:
         QMessageBox.critical(self, "Erro de captura", mensagem)
@@ -619,11 +732,13 @@ class JanelaPrincipal(QMainWindow):
     def _ao_terminar(self) -> None:
         # stream acabou (parar, troca de câmera, erro): fecha o vídeo com o que foi gravado
         self.parar_gravacao()
+        self.rajada.parar()
         # descarta o frame antigo: não pode ser salvo depois com metadados de outra câmera/modo
         self.ultimo_frame = None
         self._negociado = None
         self.btn_capturar.setEnabled(False)
         self.btn_gravar.setEnabled(False)
+        self.btn_rajada.setEnabled(False)
         self._habilitar_edicao(True)
         self.btn_abrir.setEnabled(self.camera_atual() is not None)
         self.lbl_status_modo.setText("parado")
@@ -637,6 +752,8 @@ class JanelaPrincipal(QMainWindow):
             t.join(TEMPO_MAX_FINALIZAR_S + 5)
             if t.is_alive():
                 QMessageBox.warning(self, "Gravação", "O vídeo ainda não terminou de ser salvo; o arquivo pode ficar incompleto.")
+        if not self.rajada.fechar(TEMPO_MAX_FECHAR_S):  # espera as fotos pendentes da rajada
+            QMessageBox.warning(self, "Rajada", "Ainda havia fotos da rajada sendo salvas; algumas podem faltar.")
         self.painel_controles.fechar()
         super().closeEvent(evento)
 

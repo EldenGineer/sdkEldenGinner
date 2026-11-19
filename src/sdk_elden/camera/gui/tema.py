@@ -81,6 +81,8 @@ QPushButton:disabled {{ color: {TEXTO_DESAB}; border-color: {BORDA}; }}
 QPushButton#btnPadrao {{ padding: 0; }}
 /* gravar: neutro parado; vermelho enquanto grava (mesmo vermelho do capturar) */
 QPushButton#btnGravar[gravando="true"] {{ background: {CAPTURA}; border: none; color: #FFFFFF; font-weight: 600; }}
+QPushButton#btnRajada[ativo="true"] {{ background: {ALTERADO}; border: none; color: {FUNDO}; font-weight: 600; }}
+QLabel#lblRajada {{ color: {ALTERADO}; font-family: {FONTE_MONO}; font-weight: 600; padding-left: 14px; }}
 QLabel#lblRec {{ color: {ERRO}; font-family: {FONTE_MONO}; font-weight: 600; padding-left: 14px; }}
 QPushButton#btnCapturar {{ background: {CAPTURA}; border: none; color: #FFFFFF; font-weight: 600; padding: 10px 18px; }}
 QPushButton#btnCapturar:hover {{ background: {CAPTURA_HOVER}; }}

@@ -266,3 +266,66 @@ def test_fechar_janela_gravando_salva_o_video(app, tmp_path, monkeypatch):
     j.close()  # closeEvent: para o stream, encerra a gravação e ESPERA o arquivo fechar
     assert destino.exists() and destino.with_suffix(".json").exists()
     assert not list(destino.parent.glob(".*tmp*"))
+
+
+# --- rajada pela GUI ----------------------------------------------------------------------
+def test_rajada_sem_stream_nao_faz_nada(janela_sem_camera):
+    j = janela_sem_camera
+    assert not j.btn_rajada.isEnabled()
+    j.alternar_rajada()
+    assert not j.rajada.ativo and not j.rajada_visivel
+
+
+def test_janela_config_rajada_ida_e_volta(app, tmp_path):
+    from sdk_elden.camera.armazenamento import ConfigArmazenamento
+    from sdk_elden.camera.gui.janela_config import JanelaConfig
+    from sdk_elden.camera.rajada import ConfigRajada
+
+    d = JanelaConfig(ConfigArmazenamento(raiz=str(tmp_path)), tmp_path / "c.toml", None,
+                     cfg_rajada=ConfigRajada(intervalo_s=2.5, quantidade=0))
+    assert d.config_rajada() == ConfigRajada(intervalo_s=2.5, quantidade=0)
+    assert d.sp_quantidade.text() == "∞"  # 0 = sem limite, mostrado como ∞
+    d.sp_intervalo.setValue(0.25)
+    d.sp_quantidade.setValue(30)
+    assert d.config_rajada() == ConfigRajada(intervalo_s=0.25, quantidade=30)
+
+
+@pytest.mark.hardware
+@pytest.mark.skipif(not os.path.exists(REDEAGLE), reason="Redeagle não conectada")
+def test_rajada_pela_gui(app, tmp_path, monkeypatch):
+    import json
+
+    j = _janela_gravando(app, tmp_path, monkeypatch)
+    resumos = []
+    j.rajada.terminou.connect(resumos.append)
+    try:
+        j.sp_intervalo.setValue(0.2)
+        j.sp_quantidade.setValue(5)
+        assert j.iniciar_rajada()
+        assert "Parar" in j.btn_rajada.text() and not j.sp_intervalo.isEnabled()
+        assert _esperar(app, lambda: j.rajada_visivel and "RAJADA" in j.lbl_rajada.text(), 2)
+        assert _esperar(app, lambda: bool(resumos), 10)
+        r = resumos[0]
+        assert (r.salvas, r.descartadas, r.falhas) == (5, 0, 0)
+        assert "Rajada" in j.btn_rajada.text() and j.sp_intervalo.isEnabled()
+        assert _esperar(app, lambda: not j.rajada_visivel, 2)
+        fotos = sorted((tmp_path / "cap" / "r" / "s").glob("*.json"))
+        assert [json.loads(f.read_text())["rajada"]["indice"] for f in fotos] == [1, 2, 3, 4, 5]
+    finally:
+        j.parar()
+        j.close()
+
+
+@pytest.mark.hardware
+@pytest.mark.skipif(not os.path.exists(REDEAGLE), reason="Redeagle não conectada")
+def test_fechar_janela_durante_rajada_salva_pendentes(app, tmp_path, monkeypatch):
+    j = _janela_gravando(app, tmp_path, monkeypatch)
+    j.sp_intervalo.setValue(0.1)
+    j.sp_quantidade.setValue(0)
+    assert j.iniciar_rajada()
+    _esperar(app, lambda: False, 1.0)
+    feitas = j.rajada._agenda.feitas
+    j.close()  # para a rajada e espera a fila
+    salvas = list((tmp_path / "cap" / "r" / "s").glob("*.png"))
+    assert len(salvas) >= feitas - 1 and feitas >= 8
+    assert not list((tmp_path / "cap" / "r" / "s").glob(".*tmp*"))

@@ -24,6 +24,7 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - GUI: `sdk-cam`
 - Testes de GUI sem tela: rodam no plugin Qt `offscreen` (definido em `tests/test_gui.py`). A mensagem "This plugin does not support propagateSizeHints()" é ruído desse plugin.
 - Listar câmeras/modos/controles: `sdk-cam-listar`
+- Rajada (fotos automáticas): `sdk-cam-rajada /dev/video2 --fourcc MJPG --largura 2560 --altura 1440 --fps 30 --intervalo 0.5 --quantidade 20 [--config arq.toml]` (`--quantidade 0` = até Ctrl+C; antes de reinstalar: `python -m sdk_elden.camera.rajada ...`)
 - Gravar vídeo: `sdk-cam-gravar /dev/video2 --fourcc MJPG --largura 2560 --altura 1440 --fps 30 --segundos 5 [--formato mkv] [--codificador h264_nvenc] [--config arq.toml]` (enquanto o entry point não for reinstalado: `python -m sdk_elden.camera.gravacao ...`)
 - Abrir num modo explícito e medir FPS real: `sdk-cam-capturar /dev/video2 --fourcc MJPG --largura 2560 --altura 1440 --fps 30`
 - Depois de adicionar entry point no `pyproject.toml`: `pip install -e .` de novo
@@ -53,7 +54,9 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - **Aquecimento após start do stream**: a Redeagle às vezes começa abaixo da taxa (ex.: 22 → 30 fps no 1º segundo), de forma intermitente. `medir_fps` descarta `FRAMES_AQUECIMENTO=30` antes de medir. O FPS da GUI (média móvel de 1 s) mostra esse transiente naturalmente.
 - Unidade de `exposure_time_absolute` da Redeagle **não confirmada**: 1000 não derrubou o FPS (no padrão UVC seria 100 ms → ~10 fps). Não assumir a unidade sem medir.
 - `cv2.imwrite` tem **dois** modos de falha: retorna `False` (ex.: diretório inexistente) ou lança `cv2.error` (ex.: imagem vazia). `armazenamento` converte os dois em `ErroArmazenamento`.
-- Custo de salvar 2560x1440: PNG ~65 ms, JPG q95 ~8 ms. O salvamento é síncrono na thread da GUI (aceitável para captura manual; para rajada, mover para uma thread).
+- Custo de salvar 2560x1440: PNG ~65 ms, JPG q95 ~8 ms. A foto manual é salva na thread da GUI (aceitável); a rajada salva numa `FilaTrabalho` (thread própria).
+- **Rajada sustentada 2560x1440 a 20 fotos/s por 10 s** (2026-11-19): PNG salvou 176/200 (24 descartadas por fila cheia, CPU 128%, 580 MB, ~3,3 MB por foto); JPG q95 salvou 200/200 (CPU 52%, 88 MB). PNG aguenta ~15 fotos/s; para rajada rápida, usar JPG. Picos curtos (40 fotos em 2 s) cabem na fila de 16 sem descarte.
+- Rajada guiada pela chegada dos frames: com intervalo de 0,05 s e câmera a 30 fps, os intervalos reais alternam entre 33 e 67 ms (média de 50 ms). É esperado; a precisão é de ~1 frame.
 - Qt: `QLabel` com quebra de linha dentro de `QFormLayout` não recalcula a altura quando o texto muda (caminhos longos cortados). Deixar esses rótulos fora do form.
 - Qt: ao remontar layouts, `takeAt()` não tira o widget da tela. Usar `hide()` antes do `deleteLater()`, senão sobram "fantasmas" até o loop de eventos rodar. **Não usar `setParent(None)`** (era a solução anterior): o widget vira janela de nível superior por um instante e, no plugin `offscreen`, isso **desativava a janela principal** a cada troca de câmera (foco de teclado perdido). Não confirmado se acontece no Wayland/X11 real; `hide()` evita o risco nos dois.
 - Controles abertos (`ControlesCamera`) e stream do OpenCV coexistem, inclusive com troca de formato (verificado). Reler todos os controles custa ~0,4 ms.
@@ -76,6 +79,8 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - QSS: fundo em subclasse de `QWidget` exige `WA_StyledBackground`.
 - **`QTest.qWait` segura o GIL** (PySide6): uma QThread em Python (ex.: `ThreadCaptura`) quase não roda enquanto o script principal espera com ele (0 frames em 3 s, contra 81 com `time.sleep` + `processEvents`). Nos testes/scripts com câmera, esperar com `time.sleep` + `app.processEvents()`. O app real (`app.exec()`) não tem o problema.
 - Qt: widget dentro de `QToolBar` aparece/some pela **QAction devolvida por `addWidget`** (`setVisible`); `show()`/`hide()` no widget não funciona (fica sem geometria). Janela nunca mostrada (`show()`) também não diagrama a barra.
+- Rajada: o horário da foto (nome e sidecar) é o da **chegada do frame**, não o do enfileiramento. Com `datetime.now()` no enfileiramento, frames processados em sequência rápida colidiam no mesmo milissegundo do nome e o salvamento recusava ("já existe").
+- Barra de captura: destino e "última" ficam na coluna flexível (`QSizePolicy.Ignored`); senão, com rajada/gravar/capturar, o caminho de destino era cortado.
 - O instante de cada frame é tomado na `ThreadCaptura`, logo após `ler()` (sinal `novo_frame(QImage, frame, instante)`): tomado na GUI, o atraso da fila de eventos viraria buraco/repetição no vídeo.
 - Fechar o vídeo (ffmpeg + `+faststart`, que reescreve o arquivo inteiro) roda numa thread; o `closeEvent` espera explicitamente (`TEMPO_MAX_FINALIZAR_S` + 5 s) para não deixar `.tmp` sem índice.
 - opencv-python-headless 5.1: `VideoWriter` grava MJPG/XVID/mp4v/FFV1, mas **não** avc1/H264/X264 (testado). Por isso a gravação usa o ffmpeg do sistema.
@@ -99,11 +104,14 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 9. [x] Painel de controles agrupado (tabela `GRUPOS` por nome + "Outros") com marca "≠ padrão"; setas ↑/↓ nos spinbox; navegação por teclado em toda a janela
 10. [x] `camera/gravacao.py` (Gravador via ffmpeg, RelogioCFR, sidecar) + CLI `sdk-cam-gravar`
 11. [x] GUI: botão Gravar (Ctrl+R), indicador ● REC na barra superior (tempo + descartes), opções de vídeo em Configurações
+12. [x] `camera/rajada.py` (AgendaRajada, bloco `rajada` no sidecar) + `utils/fila_trabalho.py` + CLI `sdk-cam-rajada`
+13. [x] GUI: modo rajada (Ctrl+B): intervalo/quantidade na barra de captura (sessão), padrões em Configurações, indicador ◉ RAJADA (contador, próxima, descartes), resumo ao terminar
 
 ## Inventário de reaproveitáveis
 ### Transversal (`sdk_elden.utils`)
 - `utils.config.carregar_secao(caminho, secao, Dataclass)` / `salvar_secao(caminho, secao, obj)`: TOML ↔ dataclass, com checagem de chaves/tipos, escrita atômica, preservando outras seções. `ErroConfig`. `DIR_CONFIG = ~/.config/sdk_elden`.
 - `utils.config.de_dict(Dataclass, dict)`: validação de dict → dataclass (campos str/int/float/bool).
+- `utils.fila_trabalho.FilaTrabalho(funcao, tamanho, ao_concluir, ao_falhar)`: uma thread consumidora, FIFO, `enviar()` nunca bloqueia (fila cheia = `descartadas` += 1), `fechar(timeout)` termina o que está na fila. Callbacks rodam na thread consumidora (na GUI, emitir sinal).
 
 ### Câmera
 - `sdk_elden.camera.dispositivos.listar_cameras()`: lista os nós V4L2 de captura com modos (formato/res/FPS) e controles.
@@ -133,5 +141,9 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - `sdk_elden.camera.gravacao.Gravador(cfg, destino, largura, altura, fps, fila=8)`: `escrever(frame, t)` (não bloqueia; fila cheia = descarte contado), `finalizar()` (arquivo .tmp → final), `cancelar()`, `estatisticas()`, `erro`. `iniciar_gravacao(cfg_arm, cfg_grav, meta)` / `finalizar_com_sidecar(g, cfg_arm, meta)`. `RelogioCFR(fps).vezes(t)`, `montar_comando(...)`, `ConfigGravacao`, `ErroGravacao`.
 - `sdk_elden.camera.armazenamento.nome_base(agora, camera_nome, l, a)` / `dados_camera(meta)` / `escrever_sidecar(destino, dados)`: partes comuns de foto e vídeo.
 - `JanelaPrincipal.iniciar_gravacao()` / `parar_gravacao()` / `alternar_gravacao()` / `gravando` / `rec_visivel`: gravação na GUI; para sozinha ao parar o stream, trocar de câmera ou fechar a janela. `JanelaConfig(..., cfg_grav=)` + `config_gravacao()`: seção de vídeo.
+- `sdk_elden.camera.rajada.AgendaRajada(ConfigRajada)`: `deve_capturar(t)` por frame que chega (agenda ancorada em t0, sem repetir frame, `perdidas` conta horários pulados), `terminou`, `proximo_em(t)`. `bloco_sidecar(id, indice, cfg)` / `id_rajada(agora, camera)`. `ConfigRajada(intervalo_s, quantidade)`, seção `[rajada]` no `camera.toml`, `INTERVALO_MIN_S=0.05`.
+- `salvar_captura(..., extra=dict)`: campos extras no sidecar (recusa sobrescrever os padrão).
+- `sdk_elden.camera.gui.controlador_rajada.ControladorRajada`: `iniciar(cfg_arm, cfg_rajada, camera_nome, meta=callable)`, `ao_frame(frame, instante)`, `parar()`, `texto_status()`, `fechar(timeout)`; sinais `foto_salva(Path)`, `falhou(str)`, `parou()`, `terminou(ResumoRajada)`. O horário de cada foto é o da chegada do frame (relógio de parede do 1º frame + delta monotônico).
+- `sdk_elden.camera.gui.janela_config.campos_rajada()`: par (intervalo, quantidade) com os limites de `rajada.py`, usado na barra e em Configurações.
 - `PainelControles.estado_atual()`: controles lidos agora (usado no sidecar).
 - `sdk_elden.camera.gui.painel_controles.EditorControle(info, ao_escrever, ao_restaurar)`: widget de 1 controle conforme o tipo (slider+spin, checkbox, combo, hex); `atualizar(info)` sem disparar escrita.
