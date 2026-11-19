@@ -14,6 +14,12 @@ Dentro de um grupo (o foco está numa parada):
     Enter             aciona o botão em foco
     R                 `restaurar()` do ancestral que tiver esse método (EditorControle)
 
+Teclas reservadas (`teclas_reservadas`, ex.: Espaço -> capturar): tratadas ANTES de qualquer
+widget, onde quer que esteja o foco (ou sem foco). Motivo: um QShortcut perde para widgets que
+reivindicam a tecla; o QSpinBox toma o Espaço como texto, e a captura não disparava com o foco
+nos controles numéricos. Repetição automática (tecla segurada) é ignorada: 1 aperto = 1 ação.
+Por isso a janela dona não deve ter campo de texto livre que precise dessas teclas.
+
 Duplo Tab: o 1º Tab NÃO move na hora; espera JANELA_DUPLO_TAB_MS. Se vier um 2º Tab nesse
 intervalo, entra no grupo; senão, move para o próximo. Custo aceito (decisão do usuário,
 2026-11-19): cada Tab entre grupos tem esse atraso.
@@ -93,11 +99,13 @@ class Navegador(QObject):
     janelas (diálogos seguem com o Tab normal do Qt)."""
 
     def __init__(self, janela: QWidget, grupos: Callable[[], Iterable[GrupoNavegavel]],
-                 ao_esc_fora: Callable[[], None] | None = None):
+                 ao_esc_fora: Callable[[], None] | None = None,
+                 teclas_reservadas: dict[Qt.Key, Callable[[], object]] | None = None):
         super().__init__(janela)
         self._janela = janela
         self._grupos = grupos
         self._ao_esc_fora = ao_esc_fora
+        self._reservadas = dict(teclas_reservadas or {})
         self._timer_tab = QTimer(self)
         self._timer_tab.setSingleShot(True)
         self._timer_tab.setInterval(JANELA_DUPLO_TAB_MS)
@@ -153,12 +161,19 @@ class Navegador(QObject):
         if obj.window() is not self._janela:
             return False
         foco = QApplication.focusWidget()
+        if foco is None and obj is self._janela:
+            foco = self._janela  # nenhum widget com foco: a tecla vai para a própria janela
         if obj is not foco:
             return False  # o mesmo evento passa por pais/proxies: tratar uma vez só
         return self._tecla(evento, foco)
 
     def _tecla(self, ev: QKeyEvent, foco: QWidget) -> bool:
         tecla, mods = ev.key(), ev.modifiers() & ~Qt.KeyboardModifier.KeypadModifier
+        if tecla in self._reservadas and mods == Qt.KeyboardModifier.NoModifier:
+            if not ev.isAutoRepeat():
+                self._reservadas[tecla]()
+            return True  # consumida sempre: nunca chega ao widget (ex.: Espaço no spinbox)
+
         grupo_foco = foco if isinstance(foco, GrupoNavegavel) else None
         grupo_dentro = None if grupo_foco else self.grupo_de(foco)
 

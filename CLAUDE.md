@@ -20,6 +20,7 @@ Kit de ferramentas pessoal do Eduardo (visão computacional / IA embarcada). Cad
 Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C++ no futuro, se for rodar dentro de placas embarcadas.
 
 ## Comandos
+- Documentação para usuários: `README.md` (instalação, uso, atalhos, configuração, limitações). Manter em dia ao mudar comandos, atalhos ou a config.
 - **Instalar em outra máquina**: `git clone ... && cd sdkEldenGinner && scripts/instalar.sh` (pyenv, padrão) ou `scripts/instalar.sh --venv local` (`.venv/` sem pyenv). `--simular` mostra os passos sem executar; `--atalho` cria a entrada do menu; `--sem-testes`. Idempotente. Nunca roda sudo: imprime `sudo apt install ...` / `sudo usermod -aG video $USER` quando falta algo.
 - Testes: `pytest` (só os testes sem hardware: `pytest -m "not hardware"`)
 - GUI: `sdk-cam`
@@ -70,6 +71,7 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - Cada câmera UVC expõe 2 nós (captura + metadados). Filtrar por capability `VIDEO_CAPTURE`.
 - Wayland: posicionamento de janela é ignorado pelo compositor.
 - Qt: um `QShortcut` é processado **antes** de um event filter de KeyPress. Por isso não há `QShortcut` de Esc: o `Navegador` trata o Esc (sai do grupo; fora de grupo, sai do Foco).
+- Qt: um `QShortcut` **perde** para widgets que reivindicam a tecla como texto (ShortcutOverride): com foco num `QSpinBox`, o Espaço não capturava (reproduzido: 0 capturas nos spinbox, 1 nos demais). Solução: Espaço é `teclas_reservadas` do `Navegador`, tratado antes de qualquer widget, inclusive sem foco. Repetição automática (tecla segurada) é ignorada: 1 aperto = 1 foto. Consequência: a janela principal não pode ter campo de texto livre que precise do Espaço.
 - Qt: `QComboBox` emite `activated` também ao trocar o item pelo teclado (↑/↓). O painel escreve no driver por esse sinal (verificado em `test_navegacao.py`).
 - Qt: Shift+Tab chega como `Key_Backtab` pela plataforma, mas como `Key_Tab` + Shift em eventos sintéticos (`QTest`). O filtro aceita os dois.
 - Testes de GUI: sem tela, um `QMessageBox` modal espera um clique para sempre. Teste que pode abrir um deve trocá-lo por `pytest.fail` (a suíte travava quando a câmera estava ocupada pelo `sdk-cam` aberto).
@@ -141,7 +143,7 @@ Decisão: manter Python, sem C++/Qt6 nativo. O núcleo V4L2 pode virar módulo C
 - `sdk_elden.camera.gui.janela_config.JanelaConfig(cfg, caminho_arquivo)`: diálogo de raiz/repo/subrepo/formato com validação ao vivo; `subpastas(pasta)` sugere nomes existentes.
 - `sdk_elden.camera.gui.tema`: paleta cinza (constantes `FUNDO`, `PAINEL`, `TEXTO`...), `QSS`, `paleta()`, `aplicar_tema(app)` (fixa o estilo Fusion). Cores por objectName (`btnCapturar`, `tituloSecao`, `painelEsquerdo`...).
 - `JanelaPrincipal.acao_cameras` / `acao_controles` / `acao_foco`: QActions alternáveis dos painéis. Modo compacto: `LARGURA_COMPACTA=1200`, age só ao cruzar o limite e restaura o estado anterior.
-- `sdk_elden.camera.gui.navegacao.GrupoNavegavel(titulo)` / `Navegador(janela, grupos, ao_esc_fora)`: navegação em dois níveis. Tab entre grupos (espera `JANELA_DUPLO_TAB_MS=250` para distinguir do duplo Tab, decisão do usuário), Tab Tab entra, Tab/Shift+Tab dentro, Esc sai, W/S = ↑/↓, X marca caixa, Enter aciona botão, R chama `restaurar()` do ancestral. Paradas registradas explicitamente (`adicionar_parada`). Só age na janela dona; letras em `QLineEdit` continuam texto.
+- `sdk_elden.camera.gui.navegacao.GrupoNavegavel(titulo)` / `Navegador(janela, grupos, ao_esc_fora)`: navegação em dois níveis. Tab entre grupos (espera `JANELA_DUPLO_TAB_MS=250` para distinguir do duplo Tab, decisão do usuário), Tab Tab entra, Tab/Shift+Tab dentro, Esc sai, W/S = ↑/↓, X marca caixa, Enter aciona botão, R chama `restaurar()` do ancestral. Paradas registradas explicitamente (`adicionar_parada`). Só age na janela dona; letras em `QLineEdit` continuam texto. `teclas_reservadas={tecla: callback}`: teclas que valem em qualquer foco (Espaço = capturar).
 - `sdk_elden.camera.gui.painel_controles.agrupar(infos)` / `GRUPOS` / `ORDEM_GRUPOS`: agrupamento por nome (controle fora da tabela vai para "Outros", nunca some). `atalhos(info)` / `descricao(info)`: textos do tooltip. Cada controle tem uma parada só (`EditorControle.entrada`); slider e ↺ ficam fora do Tab.
 - `sdk_elden.camera.gui.tema.DIR_ICONES`: setas SVG (`icones/`, em package-data) usadas no QSS por caminho absoluto.
 - `sdk_elden.camera.gravacao.Gravador(cfg, destino, largura, altura, fps, fila=8)`: `escrever(frame, t)` (não bloqueia; fila cheia = descarte contado), `finalizar()` (arquivo .tmp → final), `cancelar()`, `estatisticas()`, `erro`. `iniciar_gravacao(cfg_arm, cfg_grav, meta)` / `finalizar_com_sidecar(g, cfg_arm, meta)`. `RelogioCFR(fps).vezes(t)`, `montar_comando(...)`, `ConfigGravacao`, `ErroGravacao`.

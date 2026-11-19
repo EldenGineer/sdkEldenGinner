@@ -329,3 +329,22 @@ def test_fechar_janela_durante_rajada_salva_pendentes(app, tmp_path, monkeypatch
     salvas = list((tmp_path / "cap" / "r" / "s").glob("*.png"))
     assert len(salvas) >= feitas - 1 and feitas >= 8
     assert not list((tmp_path / "cap" / "r" / "s").glob(".*tmp*"))
+
+
+def test_espaco_captura_com_foco_em_qualquer_controle(app, janela_sem_camera, monkeypatch):
+    """Regressão: com foco num spinbox (controles numéricos, campos da rajada) o Espaço não capturava."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    j = janela_sem_camera
+    capturas = []
+    monkeypatch.setattr(j, "capturar", lambda: capturas.append(1))
+    j.activateWindow()
+    assert QTest.qWaitForWindowActive(j)
+    alvos = [j.sp_intervalo, j.sp_quantidade, j.lista, j.btn_rajada, j.grupo_modo, j.cb_formato]
+    for w in alvos:
+        w.setEnabled(True)
+        w.setFocus()
+        QTest.keyClick(w, Qt.Key.Key_Space)
+    assert len(capturas) == len(alvos)
+    assert j.sp_intervalo.value() == j.cfg_rajada.intervalo_s  # o campo não recebeu o espaço

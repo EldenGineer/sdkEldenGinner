@@ -60,14 +60,15 @@ def tela(app):
         g2.adicionar_parada(w)
     raiz.addWidget(g1)
     raiz.addWidget(g2)
-    esc_fora = []
-    nav = Navegador(janela, lambda: [g1, g2], ao_esc_fora=lambda: esc_fora.append(1))
+    esc_fora, espacos = [], []
+    nav = Navegador(janela, lambda: [g1, g2], ao_esc_fora=lambda: esc_fora.append(1),
+                    teclas_reservadas={Qt.Key.Key_Space: lambda: espacos.append(1)})
     janela.show()
     janela.activateWindow()
     assert QTest.qWaitForWindowActive(janela)
     ns = type("Tela", (), {})()
     ns.__dict__.update(janela=janela, g1=g1, g2=g2, editor=editor, spin=editor.spin, combo=combo,
-                       caixa=caixa, botao=botao, texto=texto, esc_fora=esc_fora, nav=nav)
+                       caixa=caixa, botao=botao, texto=texto, esc_fora=esc_fora, espacos=espacos, nav=nav)
     yield ns
     janela.close()
     janela.deleteLater()
@@ -192,3 +193,43 @@ def test_outra_janela_nao_e_afetada(app, tela):
     QTest.keyClick(a, Qt.Key.Key_W)
     assert a.value() == 0  # W não vira seta fora da janela do navegador
     outra.close()
+
+
+# --- tecla reservada (Espaço = capturar na janela principal) ------------------------------
+def test_espaco_reservado_em_qualquer_parada(tela):
+    """Regressão: no spinbox o Espaço virava texto e a ação reservada não disparava."""
+    cliques = []
+    tela.botao.clicked.connect(lambda: cliques.append(1))
+    for w in (tela.spin, tela.combo, tela.caixa, tela.botao, tela.g1):
+        w.setFocus()
+        tecla(tela, Qt.Key.Key_Space)
+    assert len(tela.espacos) == 5
+    assert tela.spin.value() == 50 and tela.combo.currentText() == "a"  # widgets intactos
+    assert not tela.caixa.isChecked() and cliques == []
+
+
+def test_espaco_sem_foco_nenhum(app, tela):
+    tela.janela.setFocus()
+    w = QApplication.focusWidget()
+    if w is not None:
+        w.clearFocus()
+    QTest.keyClick(tela.janela, Qt.Key.Key_Space)
+    assert tela.espacos == [1]
+
+
+def test_espaco_segurado_conta_uma_vez(app, tela):
+    from PySide6.QtCore import QEvent
+    from PySide6.QtGui import QKeyEvent
+
+    tela.spin.setFocus()
+    for repeticao in (False, True, True, True, True):  # 1º aperto + 4 repetições automáticas
+        app.sendEvent(tela.spin, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Space,
+                                           Qt.KeyboardModifier.NoModifier, " ", repeticao))
+    assert tela.espacos == [1]
+    assert tela.spin.value() == 50  # nem as repetições chegaram ao campo
+
+
+def test_espaco_com_modificador_nao_e_reservado(tela):
+    tela.spin.setFocus()
+    tecla(tela, Qt.Key.Key_Space, Qt.KeyboardModifier.ControlModifier)
+    assert tela.espacos == []

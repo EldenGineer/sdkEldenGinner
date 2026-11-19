@@ -164,7 +164,8 @@ class JanelaPrincipal(QMainWindow):
         self.btn_capturar.setObjectName("btnCapturar")
         self.btn_capturar.clicked.connect(self.capturar)
         self.btn_capturar.setEnabled(False)
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.capturar)
+        # Espaço NÃO é QShortcut: o Navegador o trata antes de qualquer widget (no spinbox, o
+        # QShortcut perdia para o campo e não capturava). Ver teclas_reservadas abaixo.
         titulo_destino = QLabel("DESTINO")
         titulo_destino.setObjectName("tituloSecao")
         self.lbl_destino = QLabel()
@@ -253,7 +254,8 @@ class JanelaPrincipal(QMainWindow):
         # Esc: dentro de um grupo sai dele; fora, sai do modo Foco (não há QShortcut de Esc:
         # ele seria processado antes do filtro e o "sair do grupo" nunca aconteceria)
         self.navegador = Navegador(self, self._grupos_navegacao,
-                                   ao_esc_fora=lambda: self.acao_foco.setChecked(False))
+                                   ao_esc_fora=lambda: self.acao_foco.setChecked(False),
+                                   teclas_reservadas={Qt.Key.Key_Space: lambda: self.capturar()})
         self.resize(1600, 820)
 
         self.atualizar_cameras()
